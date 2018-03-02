@@ -1,0 +1,77 @@
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>TVM RPC Test Page</title>
+</head>
+
+<body>
+  <h1>TVM Test Page</h1>
+  <div id="log"></div>
+  <canvas id="canvas"></canvas>
+  <script>
+    var Module = {};
+    Module["canvas"] = document.getElementById("canvas");
+  </script>
+  <script src="resnet.js"></script>
+  <script src="tvm_runtime.js"></script>
+  <script>
+    // Set these variables at the global scope so that we can debug more easily.
+    var tvm;
+    var syslib;
+    var graph_json_str;
+    var loaded_module;
+    var input;
+    var base64_params;
+    var output;
+
+    Module["onRuntimeInitialized"] = function () {
+      tvm = tvm_runtime.create(Module);
+
+      tvm.logger = function (message) {
+        console.log(message);
+        var d = document.createElement("div");
+        d.innerHTML = message;
+        document.getElementById("log").appendChild(d);
+      };
+
+      syslib = tvm.systemLib();
+
+      function load_file(url) {
+        var req = new XMLHttpRequest();
+        var result;
+        req.addEventListener("load", function() {
+          result = this.responseText;
+        });
+        req.open("get", url, false);
+        req.send();
+        return result;
+      }
+
+      graph_json_str = load_file("resnet.json");
+      ctx = tvm.context("opengl", 0);
+      loaded_module = tvm.createGraphRuntime(graph_json_str, syslib, ctx);
+      console.log("Model graph loaded!");
+
+      base64_params = load_file("resnet.params");
+      loaded_module.load_base64_params(base64_params);
+      console.log("Model parameters loaded!");
+
+      data_shape = JSON.parse(load_file("data_shape.json"));
+      input = tvm.empty(data_shape, "float32", ctx);
+      loaded_module.set_input("data", input);
+      console.log("Input data loaded!");
+
+      loaded_module.run();
+      console.log("Model execution completed!");
+
+      out_shape = JSON.parse(load_file("out_shape.json"));
+      output = tvm.empty(out_shape, "float32", ctx);
+      loaded_module.get_output(0, output);
+
+    };
+
+  </script>
+</body>
+
+</html>

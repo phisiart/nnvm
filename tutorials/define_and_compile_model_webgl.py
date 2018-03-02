@@ -14,7 +14,7 @@ Notice that you need to build tvm with OpenGL.
 
 ######################################################################
 # Overview for Supported Hardware Backend of TVM
-# -----------------------------
+# ----------------------------------------------
 # The image below shows hardware backend currently supported by TVM:
 #
 # .. image:: https://github.com/dmlc/web-data/raw/master/tvm/tutorial/tvm_support_list.png
@@ -28,6 +28,11 @@ import tvm
 import nnvm.compiler
 import nnvm.testing
 
+# To run the RPC demo, set this flag to True.
+use_rpc = False
+
+# To run the WebGL deploy demo, set this flag to True.
+use_deploy = True
 
 ######################################################################
 # Define Neural Network in NNVM
@@ -48,12 +53,13 @@ image_shape = (3, 224, 224)
 data_shape = (batch_size,) + image_shape
 out_shape = (batch_size, num_class)
 
-net, params = nnvm.testing.resnet.get_workload(batch_size=batch_size, image_shape=image_shape)
+net, params = nnvm.testing.resnet.get_workload(
+    batch_size=batch_size, image_shape=image_shape)
 print(net.debug_str())
 
 ######################################################################
 # Compilation
-# ----------------------------
+# -----------
 # Next step is to compile the model using the NNVM/TVM pipeline.
 # Users can specify the optimization level of the compilation.
 # Currently this value can be 0 to 2, which corresponds to
@@ -72,57 +78,72 @@ print(net.debug_str())
 # intrinsic IR for the specified target backend, which is OpenGL in this
 # example. Then target backend will generate module library.
 
-if tvm.module.enabled("opengl"):
-    opt_level = 0
-    target = tvm.target.opengl()
-    with nnvm.compiler.build_config(opt_level=opt_level):
-        graph, lib, params = nnvm.compiler.build(
-            net, target, shape={"data": data_shape}, params=params)
+if not tvm.module.enabled("opengl"):
+    print("OpenGL backend not enabled. This tutorial cannot be run.")
 else:
-    print("OpenGL backend not enabled.")
+    with nnvm.compiler.build_config(opt_level=0):
+        graph, lib, params = nnvm.compiler.build(
+            net,
+            target=tvm.target.opengl(),
+            shape={"data": data_shape},
+            params=params)
 
 ######################################################################
 # Save Compiled Module
-# ----------------------------
+# --------------------
 # After compilation, we can save the graph, lib and params into separate files
 # and deploy them to OpenGL.
 
 from tvm.contrib import util
 
-if tvm.module.enabled("opengl"):
+if not tvm.module.enabled("opengl"):
+    print("OpenGL backend not enabled. This tutorial cannot be run.")
+else:
     temp = util.tempdir()
+
     path_lib = temp.relpath("deploy_lib.so")
+    path_graph_json = temp.relpath("deploy_graph.json")
+    path_params = temp.relpath("deploy_param.params")
+
     lib.export_library(path_lib)
-    with open(temp.relpath("deploy_graph.json"), "w") as fo:
+    with open(path_graph_json, "w") as fo:
         fo.write(graph.json())
-    with open(temp.relpath("deploy_param.params"), "wb") as fo:
+    with open(path_params, "wb") as fo:
         fo.write(nnvm.compiler.save_param_dict(params))
+
     print(temp.listdir())
 
 ######################################################################
 # Deploy locally to OpenGL
-# ------------------------------
+# ------------------------
 # Now we can load the module back.
 
 import numpy as np
 from tvm.contrib import graph_runtime
 
-if tvm.module.enabled("opengl"):
+if not tvm.module.enabled("opengl"):
+    print("OpenGL backend not enabled. This tutorial cannot be run.")
+else:
     loaded_lib = tvm.module.load(path_lib)
-    loaded_json = open(temp.relpath("deploy_graph.json")).read()
-    loaded_params = bytearray(open(temp.relpath("deploy_param.params"), "rb").read())
-    module = graph_runtime.create(loaded_json, loaded_lib, tvm.opengl(0))
+    with open(path_graph_json) as fi:
+        path_graph_json = fi.read()
+    with open(path_params, "rb") as fi:
+        loaded_params = bytearray(fi.read())
+
+    module = graph_runtime.create(path_graph_json, loaded_lib, tvm.opengl(0))
     module.load_params(loaded_params)
 
-    input_data = tvm.nd.array(np.random.uniform(size=data_shape).astype("float32"))
+    input_data_np = np.random.uniform(size=data_shape).astype("float32")
+    input_data = tvm.nd.array(input_data_np)
     module.run(data=input_data)
+
     out = module.get_output(0, out=tvm.nd.empty(out_shape))
     # Print first 10 elements of output
     print(out.asnumpy()[0][0:10])
 
 ######################################################################
 # Compile and Deploy the Model to WebGL Remotely with RPC
-# ------------------------------
+# -------------------------------------------------------
 # Following the steps above, we can also compile the model for WebGL.
 # TVM provides rpc module to help with remote deploying.
 
@@ -139,15 +160,19 @@ if tvm.module.enabled("opengl"):
 
 from tvm.contrib import rpc, util, emscripten
 
-if tvm.module.enabled("opengl"):
+if tvm.module.enabled("opengl") and use_rpc:
+    print("Running RPC demo...")
+
     proxy_host = 'localhost'
     proxy_port = 9090
 
     # compile and save model library
-    target = tvm.target.opengl()
-    target_host = "llvm -target=asmjs-unknown-emscripten -system-lib"
     graph, lib, params = nnvm.compiler.build(
-        net, target, target_host=target_host, shape={"data": data_shape}, params=params)
+        net,
+        target=tvm.target.opengl(),
+        target_host="llvm -target=asmjs-unknown-emscripten -system-lib",
+        shape={"data": data_shape},
+        params=params)
 
     # Connect to the RPC server
     remote = rpc.connect(proxy_host, proxy_port, key="js")
@@ -195,3 +220,70 @@ if tvm.module.enabled("opengl"):
     out = module.get_output(0, out=tvm.nd.empty(out_shape, ctx=ctx))
     # Print first 10 elements of output
     print(out.asnumpy()[0][0:10])
+
+######################################################################
+# Compile and Deploy the Model to WebGL SystemLib
+# -----------------------------------------------
+# This time we are not using RPC. Instead, we will compile the model and link it
+# with the entire tvm runtime into a single giant JavaScript file. Then we will
+# run the model using JavaScript.
+#
+if tvm.module.enabled("opengl") and use_deploy:
+    print("Running WebGL SystemLib deploy demo...")
+
+    import base64
+    import json
+    import os
+    import shutil
+    import SimpleHTTPServer, SocketServer
+
+    # As usual, compile the neural network model.
+    graph, lib, params = nnvm.compiler.build(
+        net,
+        target=tvm.target.opengl(),
+        target_host="llvm -target=asmjs-unknown-emscripten -system-lib",
+        shape={"data": data_shape},
+        params=params)
+
+    # Now we save the model and link it with the TVM web runtime.
+    curr_path = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
+    working_dir = os.getcwd()
+    output_dir = os.path.join(working_dir, "resnet")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    path_lib = os.path.join(output_dir, "resnet.js")
+    path_graph = os.path.join(output_dir, "resnet.json")
+    path_params = os.path.join(output_dir, "resnet.params")
+    path_data_shape = os.path.join(output_dir, "data_shape.json")
+    path_out_shape = os.path.join(output_dir, "out_shape.json")
+
+    lib.export_library(path_lib, emscripten.create_js, options=[
+        "-s", "USE_GLFW=3",
+        "-s", "USE_WEBGL2=1",
+        "-lglfw",
+        "-s", "TOTAL_MEMORY=1073741824",
+    ])
+    with open(path_graph, "w") as fo:
+        fo.write(graph.json())
+    with open(path_params, "w") as fo:
+        fo.write(base64.b64encode(nnvm.compiler.save_param_dict(params)))
+
+    shutil.copyfile(os.path.join(curr_path, "../tvm/web/tvm_runtime.js"),
+                    os.path.join(output_dir, "tvm_runtime.js"))
+    shutil.copyfile(os.path.join(curr_path, "resnet.html"),
+                    os.path.join(output_dir, "resnet.html"))
+    with open(path_data_shape, "w") as fo:
+        json.dump(list(data_shape), fo)
+    with open(path_out_shape, "w") as fo:
+        json.dump(list(out_shape), fo)
+
+    print("Output files are in", output_dir)
+
+    print("Now running a simple server to serve the files...")
+    os.chdir(output_dir)
+    port = 8080
+    handler = SimpleHTTPServer.SimpleHTTPRequestHandler
+    httpd = SocketServer.TCPServer(("", port), handler)
+    print("Please open http://localhost:" + str(port) + "/resnet.html")
+    httpd.serve_forever()
