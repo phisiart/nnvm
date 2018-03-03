@@ -485,11 +485,6 @@ def deploy_web():
     # - input image
     image = download_image()
     image.save(os.path.join(output_dir, "data.png"))
-    # - transformed image
-    data = transform_image(image)
-    flattened = data.flatten().tolist()
-    with open(os.path.join(output_dir, "data.json"), "w") as fo:
-        fo.write(str(flattened))
     # - synset
     synset = download_synset()
     with open(os.path.join(output_dir, "synset.json"), "w") as fo:
