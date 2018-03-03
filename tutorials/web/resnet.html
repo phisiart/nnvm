@@ -2,12 +2,15 @@
 
 <head>
   <meta charset="UTF-8">
-  <title>TVM RPC Test Page</title>
+  <title>NNVM WebGL Test Page</title>
 </head>
 
 <body>
-  <h1>TVM Test Page</h1>
-  <div id="log"></div>
+  <h1>NNVM WebGL Test Page</h1>
+  <img src="data.png">
+  <div>Input Image</div>
+  <div id="prediction"></div>
+  <div id="log">Log:</div>
   <canvas id="canvas"></canvas>
   <script>
     var Module = {};
@@ -16,11 +19,35 @@
   <script src="resnet.js"></script>
   <script src="tvm_runtime.js"></script>
   <script>
+    function load_file(url) {
+      var req = new XMLHttpRequest();
+      var result;
+      req.addEventListener("load", function() {
+        result = this.responseText;
+      });
+      req.open("get", url, false);
+      req.send();
+      return result;
+    }
+
+    function argmax(arr) {
+      var res = 0;
+      for (var i = 0; i < arr.length; i++) {
+        if (arr[i] > arr[res]) {
+          res = i;
+        }
+      }
+      return res;
+    }
+
     // Set these variables at the global scope so that we can debug more easily.
     var tvm;
     var syslib;
     var graph_json_str;
     var loaded_module;
+    var data_json;
+    var data_array;
+    var data;
     var input;
     var base64_params;
     var output;
@@ -37,38 +64,37 @@
 
       syslib = tvm.systemLib();
 
-      function load_file(url) {
-        var req = new XMLHttpRequest();
-        var result;
-        req.addEventListener("load", function() {
-          result = this.responseText;
-        });
-        req.open("get", url, false);
-        req.send();
-        return result;
-      }
-
       graph_json_str = load_file("resnet.json");
       ctx = tvm.context("opengl", 0);
       loaded_module = tvm.createGraphRuntime(graph_json_str, syslib, ctx);
-      console.log("Model graph loaded!");
+      tvm.logger("Model graph loaded!");
 
       base64_params = load_file("resnet.params");
       loaded_module.load_base64_params(base64_params);
-      console.log("Model parameters loaded!");
+      tvm.logger("Model parameters loaded!");
 
       data_shape = JSON.parse(load_file("data_shape.json"));
-      input = tvm.empty(data_shape, "float32", ctx);
-      loaded_module.set_input("data", input);
-      console.log("Input data loaded!");
+
+      data_json = load_file("data.json");
+      data_array = JSON.parse(data_json);
+      data = tvm.empty(data_shape, "float32", ctx);
+      data.copyFrom(data_array);
+      // input = tvm.empty(data_shape, "float32", ctx);
+      loaded_module.set_input("data", data);
+      tvm.logger("Input data loaded!");
 
       loaded_module.run();
-      console.log("Model execution completed!");
+      tvm.logger("Model execution completed!");
 
       out_shape = JSON.parse(load_file("out_shape.json"));
       output = tvm.empty(out_shape, "float32", ctx);
       loaded_module.get_output(0, output);
 
+      prediction = argmax(output.asArray());
+      
+      synset = JSON.parse(load_file("synset.json"));
+      result_string = "Prediction: " + synset[prediction] + "\n";
+      document.getElementById("prediction").innerHTML = result_string;
     };
 
   </script>
